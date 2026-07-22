@@ -62,11 +62,13 @@ if not AGNES_API_KEY:
 if not GIGACHAT_API_KEY:
     log("⚠️ GIGACHAT_API_KEY не задан (GigaChat не будет использоваться)")
 
-log("🚀 Запуск бота для Строительного навигатора (с очисткой расписания)")
+log("🚀 Запуск бота для Строительного навигатора (с аналитикой и самообучением)")
 log(f"📌 Группа ID: {VK_GROUP_ID}")
 
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
+STATS_FILE = os.path.join(DATA_DIR, "post_history.json")
 log(f"📂 Файл расписания: {SCHEDULE_FILE}")
+log(f"📂 Файл статистики: {STATS_FILE}")
 
 # ===== ПРОВЕРКА ПРАВ ТОКЕНА VK =====
 def check_vk_token_permissions():
@@ -222,12 +224,110 @@ def generate_post_text(topic):
         return None
 
 # ============================================================
-# ===== УЛУЧШЕННЫЙ ПРОМПТ ДЛЯ КАРТИНОК =====
+# ===== МОДУЛЬ СТАТИСТИКИ И САМООБУЧЕНИЯ =====
 # ============================================================
 
-def build_image_prompt(topic):
+def load_stats():
+    try:
+        if os.path.exists(STATS_FILE):
+            with open(STATS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return []
+    except Exception as e:
+        log(f"⚠️ Ошибка загрузки статистики: {e}")
+        return []
+
+def save_stats(stats):
+    try:
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"⚠️ Ошибка сохранения статистики: {e}")
+
+def fetch_post_stats(post_id, owner_id):
+    """
+    Получает статистику поста через VK API.
+    Возвращает dict с полями likes, reposts, comments, views.
+    """
+    try:
+        params = {
+            "posts": f"{owner_id}_{post_id}",
+            "access_token": VK_TOKEN,
+            "v": "5.131"
+        }
+        response = requests.get("https://api.vk.com/method/wall.getById", params=params, timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            if "response" in data and len(data["response"]) > 0:
+                post = data["response"][0]
+                likes = post.get("likes", {}).get("count", 0)
+                reposts = post.get("reposts", {}).get("count", 0)
+                comments = post.get("comments", {}).get("count", 0)
+                views = post.get("views", {}).get("count", 0)
+                return {"likes": likes, "reposts": reposts, "comments": comments, "views": views}
+            else:
+                log(f"⚠️ Не удалось получить статистику поста {post_id}: {data}")
+                return None
+        else:
+            log(f"⚠️ Ошибка VK при получении статистики: {response.status_code}")
+            return None
+    except Exception as e:
+        log(f"⚠️ Исключение при получении статистики: {e}")
+        return None
+
+def update_post_history(niche, topic, post_id, stats):
+    history = load_stats()
+    views = stats.get("views", 1)
+    engagement = (stats.get("likes", 0) + stats.get("reposts", 0) + stats.get("comments", 0)) / views * 100
+    record = {
+        "timestamp": datetime.now().isoformat(),
+        "niche": niche,
+        "topic": topic,
+        "post_id": post_id,
+        "likes": stats.get("likes", 0),
+        "reposts": stats.get("reposts", 0),
+        "comments": stats.get("comments", 0),
+        "views": views,
+        "engagement": engagement
+    }
+    history.append(record)
+    save_stats(history)
+    log(f"📊 Сохранена статистика поста {post_id}: likes={stats['likes']}, engagement={engagement:.2f}%")
+    return record
+
+def get_best_topics(niche, limit=5):
+    """Возвращает список тем с наибольшей вовлечённостью для данной ниши."""
+    history = load_stats()
+    niche_posts = [h for h in history if h.get("niche") == niche]
+    if not niche_posts:
+        return []
+    sorted_posts = sorted(niche_posts, key=lambda x: x.get("engagement", 0), reverse=True)
+    seen = set()
+    best = []
+    for post in sorted_posts:
+        topic = post.get("topic", "")
+        if topic and topic not in seen:
+            seen.add(topic)
+            best.append(topic)
+            if len(best) >= limit:
+                break
+    return best
+
+def enhance_topic_with_best_topics(niche, original_topic):
+    """Улучшает тему, добавляя успешные темы как пример."""
+    best = get_best_topics(niche, limit=3)
+    if not best:
+        return original_topic
+    return f"{original_topic} (учитывая успешные форматы: {', '.join(best)})"
+
+# ============================================================
+# ===== УЛУЧШЕННЫЙ ПРОМПТ ДЛЯ КАРТИНОК (с учётом статистики) =====
+# ============================================================
+
+def build_image_prompt(topic, niche):
+    enhanced_topic = enhance_topic_with_best_topics(niche, topic)
     base = (
-        f"Hyperrealistic cinematic photograph, square 1:1 format, {topic}. "
+        f"Hyperrealistic cinematic photograph, square 1:1 format, {enhanced_topic}. "
         "No text, no typography, no words, no letters, no numbers on the image. "
         "May include stylized icons, logos, geometric shapes, abstract patterns, "
         "branding elements, arrows, badges, or graphic overlays for visual appeal. "
@@ -378,17 +478,19 @@ def post_to_vk(image_bytes, text):
         log("   Публикация без фото (только текст)")
         result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
         if result is None:
-            return False, "Ошибка публикации текста", False
-        log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
-        return True, None, False
+            return False, "Ошибка публикации текста", False, None
+        post_id = result.get("post_id")
+        log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {post_id}")
+        return True, None, False, post_id
 
     if not HAS_PHOTO_PERMISSION:
         log("   ⚠️ Токен не имеет права 'photos', публикуем без фото")
         result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
         if result is None:
-            return False, "Ошибка публикации текста (нет прав photos)", False
-        log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
-        return True, None, False
+            return False, "Ошибка публикации текста (нет прав photos)", False, None
+        post_id = result.get("post_id")
+        log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {post_id}")
+        return True, None, False, post_id
 
     log("   Публикация с фото")
     try:
@@ -398,9 +500,10 @@ def post_to_vk(image_bytes, text):
             log("   ❌ Не удалось получить upload_url, публикуем без фото")
             result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
             if result is None:
-                return False, "Ошибка публикации после падения upload_url", False
-            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
-            return True, None, False
+                return False, "Ошибка публикации после падения upload_url", False, None
+            post_id = result.get("post_id")
+            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {post_id}")
+            return True, None, False, post_id
         upload_url = upload_resp["upload_url"]
         log(f"   upload_url получен: {upload_url[:50]}...")
 
@@ -426,9 +529,10 @@ def post_to_vk(image_bytes, text):
             log(f"   ❌ Ошибка загрузки фото: {e}, публикуем без фото")
             result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
             if result is None:
-                return False, "Ошибка публикации после падения загрузки фото", False
-            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
-            return True, None, False
+                return False, "Ошибка публикации после падения загрузки фото", False, None
+            post_id = result.get("post_id")
+            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {post_id}")
+            return True, None, False, post_id
 
         log("   Шаг 3: Сохранение фото на стене...")
         save_params = {
@@ -442,9 +546,10 @@ def post_to_vk(image_bytes, text):
             log("   ❌ Ошибка сохранения фото, публикуем без фото")
             result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
             if result is None:
-                return False, "Ошибка публикации после падения сохранения фото", False
-            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
-            return True, None, False
+                return False, "Ошибка публикации после падения сохранения фото", False, None
+            post_id = result.get("post_id")
+            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {post_id}")
+            return True, None, False, post_id
 
         photo = save_resp[0]
         attachment = f"photo{photo['owner_id']}_{photo['id']}"
@@ -462,12 +567,14 @@ def post_to_vk(image_bytes, text):
             log("   ❌ Ошибка публикации с фото, пробуем без фото")
             result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
             if result is None:
-                return False, "Ошибка публикации после падения с фото", True
-            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
-            return True, None, True
+                return False, "Ошибка публикации после падения с фото", True, None
+            post_id = result.get("post_id")
+            log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {post_id}")
+            return True, None, True, post_id
 
-        log(f"✅ Пост опубликован с фото в группе {group_id}, ID: {post_resp['post_id']}")
-        return True, None, True
+        post_id = post_resp.get("post_id")
+        log(f"✅ Пост опубликован с фото в группе {group_id}, ID: {post_id}")
+        return True, None, True, post_id
 
     except Exception as e:
         log(f"   Исключение в post_to_vk: {e}")
@@ -475,18 +582,20 @@ def post_to_vk(image_bytes, text):
         try:
             result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
             if result is not None:
-                log(f"✅ Пост опубликован (без фото) после исключения, ID: {result['post_id']}")
-                return True, None, False
+                post_id = result.get("post_id")
+                log(f"✅ Пост опубликован (без фото) после исключения, ID: {post_id}")
+                return True, None, False, post_id
         except:
             pass
-        return False, f"Исключение: {str(e)}", False
+        return False, f"Исключение: {str(e)}", False, None
 
-# ===== ВЫПОЛНЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА =====
+# ===== ВЫПОЛНЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА (с аналитикой) =====
 def execute_scheduled_post(item):
     if item.get("niche") != "строительный":
         log(f"⏭️ Пропускаем задание для другой ниши: {item.get('niche')}")
         return
 
+    niche = "строительный"
     topic = item["topic"]
     time_str = item["time"]
     log(f"📢 Публикую запланированный пост: '{topic}' в {time_str} (строительный)")
@@ -507,12 +616,13 @@ def execute_scheduled_post(item):
     photo_uploaded = False
     success = False
     error = None
+    post_id = None
 
     for source_name, gen_func in sources:
         if not gen_func:
             continue
         log(f"🖼️ Шаг 2: Попытка генерации картинки через {source_name}...")
-        prompt = build_image_prompt(topic)
+        prompt = build_image_prompt(topic, niche)
         log(f"   Промпт: {prompt[:200]}...")
         image_url = gen_func(prompt)
         if not image_url:
@@ -528,7 +638,7 @@ def execute_scheduled_post(item):
 
         log(f"✅ Картинка скачана, размер {len(image_bytes)} байт")
         log("📤 Шаг 4: Публикация в VK...")
-        success, error, photo_uploaded = post_to_vk(image_bytes, post_text)
+        success, error, photo_uploaded, post_id = post_to_vk(image_bytes, post_text)
 
         if success:
             if photo_uploaded:
@@ -542,11 +652,22 @@ def execute_scheduled_post(item):
 
     if not success:
         log("⚠️ Все источники не дали результат, публикуем без фото")
-        success, error, _ = post_to_vk(None, post_text)
+        success, error, _, post_id = post_to_vk(None, post_text)
         if success:
             log("✅ Пост опубликован без фото (резервный вариант)")
         else:
             log(f"❌ Ошибка публикации без фото: {error}")
+
+    # ===== СБОР СТАТИСТИКИ ПОСЛЕ ПУБЛИКАЦИИ =====
+    if success and post_id:
+        log(f"📊 Сбор статистики для поста {post_id}...")
+        # Ждём 10 секунд, чтобы VK успел обновить данные
+        time.sleep(10)
+        stats = fetch_post_stats(post_id, VK_GROUP_ID)
+        if stats:
+            update_post_history(niche, topic, post_id, stats)
+        else:
+            log(f"⚠️ Не удалось получить статистику для поста {post_id}")
 
 # ===== ПЛАНИРОВЩИК =====
 def scheduler_loop():
@@ -570,7 +691,7 @@ def scheduler_loop():
             traceback.print_exc(file=sys.stdout)
         time.sleep(30)
 
-# ===== ОБРАБОТЧИКИ КОМАНД (добавлена /clear) =====
+# ===== ОБРАБОТЧИКИ КОМАНД (с /stats и улучшенным промптом) =====
 def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
@@ -581,19 +702,44 @@ def process_message(message):
             "👋 Бот для автопостинга в Строительный навигатор.\n"
             "🎨 Картинки: без текста, с рекламными иконками.\n"
             "🔄 Приоритет: GigaChat -> Agnes -> Pollinations\n"
+            "📊 Бот собирает статистику и учится на успешных постах.\n"
             "/post_in тема минуты — добавить пост через N минут\n"
             "/run_now тема — опубликовать прямо сейчас\n"
             "/list — показать все задания\n"
             "/debug — показать содержимое schedule.json\n"
-            "/clear — удалить все задания"
+            "/clear — удалить все задания\n"
+            "/stats — показать статистику постов"
         )
         return
 
-    # ===== НОВАЯ КОМАНДА /clear =====
     if text.startswith("/clear"):
         save_schedule([])
         send_message(chat_id, "✅ Все запланированные задания удалены. Расписание очищено.")
         log("🧹 Расписание очищено командой /clear")
+        return
+
+    if text.startswith("/stats"):
+        history = load_stats()
+        if not history:
+            send_message(chat_id, "📭 Нет данных по постам.")
+            return
+        # Группируем по нишам (у нас только строительная, но универсально)
+        niche_groups = {}
+        for h in history:
+            niche = h.get("niche", "unknown")
+            if niche not in niche_groups:
+                niche_groups[niche] = []
+            niche_groups[niche].append(h)
+        msg = "📊 Статистика постов (топ по вовлечённости):\n"
+        for niche, posts in niche_groups.items():
+            sorted_posts = sorted(posts, key=lambda x: x.get("engagement", 0), reverse=True)[:5]
+            msg += f"\n🔹 {niche}:\n"
+            for i, p in enumerate(sorted_posts, 1):
+                topic = p.get("topic", "Без темы")[:60]
+                eng = p.get("engagement", 0)
+                likes = p.get("likes", 0)
+                msg += f"  {i}. {topic}... (❤️ {likes}, вовл. {eng:.1f}%)\n"
+        send_message(chat_id, msg[:4000])
         return
 
     if text.startswith("/run_now"):
@@ -603,6 +749,7 @@ def process_message(message):
             return
         send_message(chat_id, f"⏳ Начинаю публикацию: '{topic}'...")
         def publish():
+            niche = "строительный"
             log(f"📢 Ручная публикация (строительный): {topic}")
             post_text = generate_post_text(topic)
             if not post_text:
@@ -618,12 +765,13 @@ def process_message(message):
             photo_uploaded = False
             success = False
             error = None
+            post_id = None
 
             for source_name, gen_func in sources:
                 if not gen_func:
                     continue
                 log(f"🖼️ Попытка генерации через {source_name}...")
-                prompt = build_image_prompt(topic)
+                prompt = build_image_prompt(topic, niche)
                 image_url = gen_func(prompt)
                 if not image_url:
                     log(f"   ⚠️ {source_name} не дал URL, переключаемся")
@@ -634,7 +782,7 @@ def process_message(message):
                     log(f"   ❌ Не удалось скачать от {source_name}, переключаемся")
                     continue
                 log(f"✅ Картинка скачана, размер {len(image_bytes)} байт")
-                success, error, photo_uploaded = post_to_vk(image_bytes, post_text)
+                success, error, photo_uploaded, post_id = post_to_vk(image_bytes, post_text)
                 if success:
                     if photo_uploaded:
                         send_message(chat_id, f"✅ Пост опубликован с фото от {source_name}!")
@@ -647,11 +795,22 @@ def process_message(message):
 
             if not success:
                 log("⚠️ Все источники не дали результат, публикуем без фото")
-                success, error, _ = post_to_vk(None, post_text)
+                success, error, _, post_id = post_to_vk(None, post_text)
                 if success:
                     send_message(chat_id, "✅ Пост опубликован без фото (резерв)")
                 else:
                     send_message(chat_id, f"❌ Ошибка публикации: {error}")
+
+            # Сбор статистики после публикации
+            if success and post_id:
+                log(f"📊 Сбор статистики для поста {post_id}...")
+                time.sleep(10)
+                stats = fetch_post_stats(post_id, VK_GROUP_ID)
+                if stats:
+                    update_post_history(niche, topic, post_id, stats)
+                    send_message(chat_id, "📊 Статистика поста сохранена.")
+                else:
+                    log(f"⚠️ Не удалось получить статистику для поста {post_id}")
 
         threading.Thread(target=publish).start()
         return
@@ -726,27 +885,14 @@ def get_updates(offset):
         log(f"⚠️ getUpdates исключение: {e}")
     return []
 
-# ===== ТЕСТОВЫЙ ПОСТ ПРИ ЗАПУСКЕ =====
-def add_test_post_if_empty():
-    schedule = load_schedule()
-    has_builder = any(item.get("niche") == "строительный" for item in schedule)
-    if not has_builder:
-        log("🧪 Добавляем тестовый пост для Строительного через 2 минуты")
-        test_time = (datetime.now() + timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M")
-        schedule.append({
-            "id": f"test_builder_{int(time.time())}",
-            "niche": "строительный",
-            "topic": "Тестовый пост для Строительного навигатора (гиперреалистичный)",
-            "time": test_time,
-            "done": False
-        })
-        save_schedule(schedule)
-        log(f"🧪 Добавлен тестовый пост на {test_time}")
+# ===== ТЕСТОВЫЙ ПОСТ ПРИ ЗАПУСКЕ (отключаем, чтобы не мешал) =====
+# Мы не добавляем тестовый пост, чтобы не загрязнять историю. Если хотите, можно включить.
 
 # ===== ГЛАВНЫЙ ЦИКЛ =====
 if __name__ == "__main__":
-    log("🤖 Бот для Строительного навигатора (с очисткой расписания) запущен")
-    add_test_post_if_empty()
+    log("🤖 Бот для Строительного навигатора (с аналитикой и самообучением) запущен")
+    # Не добавляем тестовый пост, чтобы статистика не засорялась.
+    # При желании можно раскомментировать.
     threading.Thread(target=scheduler_loop, daemon=True).start()
     update_id = 0
     while True:
