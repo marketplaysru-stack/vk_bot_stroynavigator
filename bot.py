@@ -12,10 +12,10 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ===== ИМПОРТ НАСТРОЕК ДЛЯ СТРОИТЕЛЬНОГО БОТА =====
-import text_prompts_builder as txt_cfg
-import image_prompts_builder as img_cfg
-import vk_feeds_builder as vk_feeds
+# ===== ИМПОРТ НАСТРОЕК (стандартные имена, без суффиксов) =====
+import text_prompts as txt_cfg
+import image_prompts as img_cfg
+import vk_feeds
 
 # ===== ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ =====
 sys.stdout.reconfigure(line_buffering=True)
@@ -190,7 +190,7 @@ def save_schedule(schedule):
         log(f"⚠️ Ошибка сохранения: {e}")
 
 # ============================================================
-# ===== ГЕНЕРАЦИЯ ТЕКСТА (использует text_prompts_builder.py) =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА (использует text_prompts.py) =====
 # ============================================================
 
 def generate_post_text(topic):
@@ -230,7 +230,7 @@ def generate_post_text(topic):
         return txt_cfg.get_fallback_text(topic)
 
 # ============================================================
-# ===== ГЕНЕРАЦИЯ КАРТИНКИ (использует image_prompts_builder.py) =====
+# ===== ГЕНЕРАЦИЯ КАРТИНКИ (использует image_prompts.py) =====
 # ============================================================
 
 def build_image_prompt(topic):
@@ -612,7 +612,7 @@ def vk_feeds_scheduler_loop():
                 log(f"📰 Добавлен пост из ВК в нишу '{niche}': {topic[:50]}...")
         except Exception as e:
             log(f"⚠️ Ошибка в VK Feeds планировщике: {e}")
-        time.sleep(2 * 60 * 60)  # 2 часа
+        time.sleep(2 * 60 * 60)
 
 # ===== ОБРАБОТЧИКИ КОМАНД =====
 def process_message(message):
