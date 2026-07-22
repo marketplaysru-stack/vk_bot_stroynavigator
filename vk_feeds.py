@@ -1,4 +1,3 @@
-# ===== vk_feeds.py (для строительного бота) =====
 import requests
 import logging
 import os
@@ -6,14 +5,12 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# ===== КОНФИГУРАЦИЯ =====
 VK_FEED_SOURCES = {
     "строительный": [
-        -156241059,   # первая группа
-        -17101123,    # вторая группа
-        -197272581,   # третья группа
+        -156241059,
+        -17101123,
+        -197272581,
     ],
-    # другие ниши не используем
 }
 
 MAX_POSTS_PER_DAY = 4
