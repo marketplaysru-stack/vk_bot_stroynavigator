@@ -1,4 +1,4 @@
-# ===== vk_feeds_builder.py =====
+# ===== vk_feeds.py (для строительного бота) =====
 import requests
 import logging
 import os
@@ -9,10 +9,11 @@ logger = logging.getLogger(__name__)
 # ===== КОНФИГУРАЦИЯ =====
 VK_FEED_SOURCES = {
     "строительный": [
-        -12345678,   # ЗАМЕНИТЕ НА РЕАЛЬНЫЕ ID ГРУПП
-        # можно добавить ещё группы
+        -156241059,   # первая группа
+        -17101123,    # вторая группа
+        -197272581,   # третья группа
     ],
-    # другие ниши не нужны, только строительная
+    # другие ниши не используем
 }
 
 MAX_POSTS_PER_DAY = 4
@@ -33,7 +34,7 @@ def save_processed_ids(ids):
             f.write(f"{pid}\n")
 
 def get_vk_api_token():
-    return os.getenv("VK_TOKEN_BUILDER")  # используем токен строительной группы
+    return os.getenv("VK_TOKEN_BUILDER")
 
 def count_today_posts_from_vk(schedule):
     today_str = datetime.now().strftime("%Y-%m-%d")
