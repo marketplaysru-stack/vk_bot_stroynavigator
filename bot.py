@@ -18,7 +18,7 @@ sys.stdout.reconfigure(line_buffering=True)
 # ===== НАСТРОЙКА ЛОГГИРОВАНИЯ =====
 DATA_DIR = "/data"
 os.makedirs(DATA_DIR, exist_ok=True)
-LOG_FILE = os.path.join(DATA_DIR, "bot_builder.log")
+LOG_FILE = os.path.join(DATA_DIR, "bot_ai.log")
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -36,37 +36,37 @@ def log(msg):
     logging.info(msg)
 
 # ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ =====
-BOT_TOKEN = os.getenv("BOT_TOKEN_NEW")
-VK_TOKEN = os.getenv("VK_TOKEN_BUILDER")
-VK_GROUP_ID = os.getenv("VK_GROUP_ID_BUILDER")
+BOT_TOKEN = os.getenv("BOT_TOKEN")                     # Токен Telegram-бота (для AI)
+VK_TOKEN = os.getenv("VK_TOKEN_AI")                    # Токен AI-группы (пользовательский)
+VK_GROUP_ID = os.getenv("VK_GROUP_ID_AI")              # -240273450
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
 GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
-PORT = int(os.getenv("PORT", 8082))
+PORT = int(os.getenv("PORT", 8080))
 
 if not BOT_TOKEN:
-    log("❌ BOT_TOKEN_NEW не задан")
+    log("❌ BOT_TOKEN не задан")
     sys.exit(1)
 if not VK_TOKEN:
-    log("❌ VK_TOKEN_BUILDER не задан")
+    log("❌ VK_TOKEN_AI не задан")
     sys.exit(1)
 if not VK_GROUP_ID:
-    log("❌ VK_GROUP_ID_BUILDER не задан")
+    log("❌ VK_GROUP_ID_AI не задан")
     sys.exit(1)
 try:
     VK_GROUP_ID = int(VK_GROUP_ID)
 except ValueError:
-    log(f"❌ VK_GROUP_ID_BUILDER должен быть числом, получено: {VK_GROUP_ID}")
+    log(f"❌ VK_GROUP_ID_AI должен быть числом, получено: {VK_GROUP_ID}")
     sys.exit(1)
 if not AGNES_API_KEY:
     log("⚠️ AGNES_API_KEY не задан (картинки через Pollinations)")
 if not GIGACHAT_API_KEY:
     log("⚠️ GIGACHAT_API_KEY не задан (GigaChat не будет использоваться)")
 
-log("🚀 Запуск бота для Строительного навигатора (информационно-образовательный, с аналитикой)")
+log("🚀 Запуск бота для AI-навигатора (с аналитикой и самообучением)")
 log(f"📌 Группа ID: {VK_GROUP_ID}")
 
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
-STATS_FILE = os.path.join(DATA_DIR, "post_history.json")
+STATS_FILE = os.path.join(DATA_DIR, "post_history_ai.json")
 log(f"📂 Файл расписания: {SCHEDULE_FILE}")
 log(f"📂 Файл статистики: {STATS_FILE}")
 
@@ -184,19 +184,16 @@ def save_schedule(schedule):
     except Exception as e:
         log(f"⚠️ Ошибка сохранения: {e}")
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА (ИНФОРМАЦИОННО-ОБРАЗОВАТЕЛЬНЫЙ СТИЛЬ) =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА (AI-концепция) =====
 def generate_post_text(topic):
     log(f"🔤 Генерация текста для темы: {topic}")
     system_prompt = (
-        "Ты — эксперт-строитель и автор образовательного блога о строительстве. "
-        "Твоя задача — писать полезные, честные и понятные посты для информационного портала. "
-        "Ты не предлагаешь услуги, не продаёшь монтаж и не составляешь сметы. "
-        "Ты делишься проверенными знаниями, лайфхаками, разбором частых ошибок, "
-        "актуальной информацией о СНИПах, ГОСТах и строительных нормах в России. "
-        "Пиши доходчиво, с примерами, без воды. "
-        "Пост должен быть практичным и вызывать доверие. "
-        "Формат: дружелюбный, экспертный, но без высокомерия. "
-        "В конце поста можно задать вопрос к читателям, чтобы обсудить тему в комментариях."
+        "Ты — эксперт в области искусственного интеллекта, технологий и цифрового будущего. "
+        "Пиши увлекательные, познавательные посты для блога о AI. "
+        "Объясняй сложные вещи простым языком, делитесь инсайтами, новостями, этическими вопросами, "
+        "примерами применения нейросетей. Пост должен быть вдохновляющим и полезным. "
+        "Задавай вопросы аудитории, чтобы стимулировать обсуждение. "
+        "Формат: дружелюбный, экспертный, без рекламы услуг."
     )
     user_prompt = f"Тема: {topic}"
     headers = {"Authorization": f"Bearer {AGNES_API_KEY}", "Content-Type": "application/json"}
@@ -259,7 +256,8 @@ def fetch_post_stats(post_id, owner_id):
             "access_token": VK_TOKEN,
             "v": "5.131"
         }
-        response = requests.get("https://api.vk.com/method/wall.getById", params=params, timeout=30)
+        # Используем POST для wall.getById
+        response = requests.post("https://api.vk.com/method/wall.getById", data=params, timeout=30)
         if response.status_code == 200:
             data = response.json()
             if "response" in data and len(data["response"]) > 0:
@@ -452,14 +450,27 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK =====
+# ===== ПУБЛИКАЦИЯ В VK (с POST для длинных запросов) =====
 def vk_api_request(method, params, token, retries=3):
+    """
+    Универсальный вызов VK API с автоматическим выбором метода (GET/POST).
+    Для методов, где тело может быть длинным, используется POST.
+    """
     base_url = "https://api.vk.com/method/"
     params = params.copy()
     params["access_token"] = token
     params["v"] = "5.131"
+
+    # Методы, которые требуют POST из-за возможной длины URL
+    post_methods = ["wall.post", "wall.getById", "photos.saveWallPhoto"]
+    use_post = method in post_methods
+
     def _do():
-        response = requests.get(base_url + method, params=params, timeout=60)
+        if use_post:
+            response = requests.post(base_url + method, data=params, timeout=60)
+        else:
+            response = requests.get(base_url + method, params=params, timeout=60)
+
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}")
         json_resp = response.json()
@@ -467,6 +478,7 @@ def vk_api_request(method, params, token, retries=3):
             log(f"   ❌ VK API ошибка в {method}: {json_resp['error']}")
             raise Exception(json_resp["error"]["error_msg"])
         return json_resp["response"]
+
     try:
         return retry_call(_do, max_retries=retries, delay=2, backoff=2)
     except Exception as e:
@@ -474,7 +486,7 @@ def vk_api_request(method, params, token, retries=3):
         return None
 
 def post_to_vk(image_bytes, text):
-    log(f"📤 Начало публикации в строительную группу (ID {VK_GROUP_ID})")
+    log(f"📤 Начало публикации в AI-группу (ID {VK_GROUP_ID})")
     group_id = VK_GROUP_ID
     token = VK_TOKEN
 
@@ -593,16 +605,16 @@ def post_to_vk(image_bytes, text):
             pass
         return False, f"Исключение: {str(e)}", False, None
 
-# ===== ВЫПОЛНЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА (с аналитикой) =====
+# ===== ВЫПОЛНЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА =====
 def execute_scheduled_post(item):
-    if item.get("niche") != "строительный":
+    if item.get("niche") != "ai":
         log(f"⏭️ Пропускаем задание для другой ниши: {item.get('niche')}")
         return
 
-    niche = "строительный"
+    niche = "ai"
     topic = item["topic"]
     time_str = item["time"]
-    log(f"📢 Публикую запланированный пост: '{topic}' в {time_str} (строительный)")
+    log(f"📢 Публикую запланированный пост: '{topic}' в {time_str} (AI)")
 
     log("🔤 Шаг 1: Генерация текста...")
     post_text = generate_post_text(topic)
@@ -684,7 +696,7 @@ def scheduler_loop():
                 log("📭 Расписание пустое")
             else:
                 for item in schedule:
-                    if item.get("niche") == "строительный" and item["time"] == now and not item.get("done", False):
+                    if item.get("niche") == "ai" and item["time"] == now and not item.get("done", False):
                         log(f"📢 Найдено задание: {item['topic']} в {item['time']}")
                         execute_scheduled_post(item)
                         item["done"] = True
@@ -694,7 +706,7 @@ def scheduler_loop():
             traceback.print_exc(file=sys.stdout)
         time.sleep(30)
 
-# ===== ОБРАБОТЧИКИ КОМАНД (с /stats и улучшенным промптом) =====
+# ===== ОБРАБОТЧИКИ КОМАНД =====
 def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
@@ -702,8 +714,8 @@ def process_message(message):
 
     if text.startswith("/start"):
         send_message(chat_id,
-            "👋 Бот для автопостинга в Строительный навигатор.\n"
-            "🎯 Информационно-образовательный портал о строительстве.\n"
+            "👋 Бот для автопостинга в AI-навигатор.\n"
+            "🎨 Картинки: без текста, с рекламными иконками.\n"
             "📊 Бот собирает статистику и учится на успешных постах.\n"
             "/post_in тема минуты — добавить пост через N минут\n"
             "/run_now тема — опубликовать прямо сейчас\n"
@@ -725,7 +737,6 @@ def process_message(message):
         if not history:
             send_message(chat_id, "📭 Нет данных по постам.")
             return
-        # Группируем по нишам (у нас только строительная, но универсально)
         niche_groups = {}
         for h in history:
             niche = h.get("niche", "unknown")
@@ -751,8 +762,8 @@ def process_message(message):
             return
         send_message(chat_id, f"⏳ Начинаю публикацию: '{topic}'...")
         def publish():
-            niche = "строительный"
-            log(f"📢 Ручная публикация (строительный): {topic}")
+            niche = "ai"
+            log(f"📢 Ручная публикация (AI): {topic}")
             post_text = generate_post_text(topic)
             if not post_text:
                 send_message(chat_id, "❌ Не удалось сгенерировать текст")
@@ -803,7 +814,6 @@ def process_message(message):
                 else:
                     send_message(chat_id, f"❌ Ошибка публикации: {error}")
 
-            # Сбор статистики после публикации
             if success and post_id:
                 log(f"📊 Сбор статистики для поста {post_id}...")
                 time.sleep(10)
@@ -832,9 +842,9 @@ def process_message(message):
         full_time = publish_time.strftime("%Y-%m-%d %H:%M")
         schedule = load_schedule()
         new_id = str(int(time.time()))
-        schedule.append({"id": new_id, "niche": "строительный", "topic": topic, "time": full_time, "done": False})
+        schedule.append({"id": new_id, "niche": "ai", "topic": topic, "time": full_time, "done": False})
         save_schedule(schedule)
-        send_message(chat_id, f"✅ Пост добавлен в Строительный: '{topic}' в {full_time}")
+        send_message(chat_id, f"✅ Пост добавлен в AI: '{topic}' в {full_time}")
         return
 
     if text.startswith("/list"):
@@ -889,7 +899,7 @@ def get_updates(offset):
 
 # ===== ГЛАВНЫЙ ЦИКЛ =====
 if __name__ == "__main__":
-    log("🤖 Бот для Строительного навигатора (информационно-образовательный) запущен")
+    log("🤖 Бот для AI-навигатора (с аналитикой и самообучением) запущен")
     threading.Thread(target=scheduler_loop, daemon=True).start()
     update_id = 0
     while True:
