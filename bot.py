@@ -12,7 +12,7 @@ from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ===== ИМПОРТ НАСТРОЕК (стандартные имена, без суффиксов) =====
+# ===== ИМПОРТ НАСТРОЕК (стандартные имена) =====
 import text_prompts as txt_cfg
 import image_prompts as img_cfg
 import vk_feeds
@@ -612,7 +612,7 @@ def vk_feeds_scheduler_loop():
                 log(f"📰 Добавлен пост из ВК в нишу '{niche}': {topic[:50]}...")
         except Exception as e:
             log(f"⚠️ Ошибка в VK Feeds планировщике: {e}")
-        time.sleep(2 * 60 * 60)
+        time.sleep(2 * 60 * 60)  # 2 часа
 
 # ===== ОБРАБОТЧИКИ КОМАНД =====
 def process_message(message):
