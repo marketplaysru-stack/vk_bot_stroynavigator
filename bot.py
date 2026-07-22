@@ -36,11 +36,11 @@ def log(msg):
     logging.info(msg)
 
 # ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ =====
-BOT_TOKEN = os.getenv("BOT_TOKEN_NEW")               # Токен Telegram-бота
-VK_TOKEN = os.getenv("VK_TOKEN_BUILDER")             # Токен строительной группы
-VK_GROUP_ID = os.getenv("VK_GROUP_ID_BUILDER")       # -239598146
+BOT_TOKEN = os.getenv("BOT_TOKEN_NEW")
+VK_TOKEN = os.getenv("VK_TOKEN_BUILDER")
+VK_GROUP_ID = os.getenv("VK_GROUP_ID_BUILDER")
 AGNES_API_KEY = os.getenv("AGNES_API_KEY")
-GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")     # Должен быть задан для приоритета
+GIGACHAT_API_KEY = os.getenv("GIGACHAT_API_KEY")
 PORT = int(os.getenv("PORT", 8082))
 
 if not BOT_TOKEN:
@@ -62,7 +62,7 @@ if not AGNES_API_KEY:
 if not GIGACHAT_API_KEY:
     log("⚠️ GIGACHAT_API_KEY не задан (GigaChat не будет использоваться)")
 
-log("🚀 Запуск бота для Строительного навигатора (приоритет GigaChat)")
+log("🚀 Запуск бота для Строительного навигатора (с очисткой расписания)")
 log(f"📌 Группа ID: {VK_GROUP_ID}")
 
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.json")
@@ -134,7 +134,7 @@ try:
 except Exception as e:
     log(f"⚠️ Ошибка удаления вебхука: {e}")
 
-# ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ RETRY (с увеличенными таймаутами) =====
+# ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ RETRY =====
 def retry_call(func, *args, max_retries=3, delay=2, backoff=2, **kwargs):
     last_exception = None
     for attempt in range(max_retries):
@@ -331,7 +331,7 @@ def generate_image_pollinations(prompt):
 def download_image(url):
     log(f"📥 Скачивание картинки: {url[:60]}...")
     def _do():
-        response = requests.get(url, timeout=120)  # увеличен таймаут
+        response = requests.get(url, timeout=120)
         if response.status_code != 200:
             raise Exception(f"HTTP {response.status_code}")
         content = response.content
@@ -348,7 +348,7 @@ def download_image(url):
         log(f"   ❌ Скачивание провалилось: {e}")
         return None
 
-# ===== ПУБЛИКАЦИЯ В VK (с увеличенными таймаутами) =====
+# ===== ПУБЛИКАЦИЯ В VK =====
 def vk_api_request(method, params, token, retries=3):
     base_url = "https://api.vk.com/method/"
     params = params.copy()
@@ -382,7 +382,6 @@ def post_to_vk(image_bytes, text):
         log(f"✅ Пост опубликован (без фото) в группе {group_id}, ID: {result['post_id']}")
         return True, None, False
 
-    # Если нет права photos, сразу выходим без фото
     if not HAS_PHOTO_PERMISSION:
         log("   ⚠️ Токен не имеет права 'photos', публикуем без фото")
         result = vk_api_request("wall.post", {"owner_id": group_id, "message": text, "from_group": 1}, token=token, retries=3)
@@ -408,7 +407,7 @@ def post_to_vk(image_bytes, text):
         log("   Шаг 2: Загрузка фото...")
         def _upload():
             files = {"photo": ("image.jpg", image_bytes, "image/jpeg")}
-            resp = requests.post(upload_url, files=files, timeout=120)  # увеличен таймаут
+            resp = requests.post(upload_url, files=files, timeout=120)
             if resp.status_code != 200:
                 raise Exception(f"HTTP {resp.status_code}")
             data = resp.json()
@@ -482,7 +481,7 @@ def post_to_vk(image_bytes, text):
             pass
         return False, f"Исключение: {str(e)}", False
 
-# ===== ВЫПОЛНЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА (с приоритетом GigaChat) =====
+# ===== ВЫПОЛНЕНИЕ ЗАПЛАНИРОВАННОГО ПОСТА =====
 def execute_scheduled_post(item):
     if item.get("niche") != "строительный":
         log(f"⏭️ Пропускаем задание для другой ниши: {item.get('niche')}")
@@ -499,7 +498,6 @@ def execute_scheduled_post(item):
         return
     log(f"✅ Текст получен, длина {len(post_text)}")
 
-    # Приоритет: GigaChat -> Agnes -> Pollinations
     sources = [
         ("GigaChat", generate_image_gigachat),
         ("Agnes", generate_image_agnes),
@@ -572,7 +570,7 @@ def scheduler_loop():
             traceback.print_exc(file=sys.stdout)
         time.sleep(30)
 
-# ===== ОБРАБОТЧИКИ КОМАНД =====
+# ===== ОБРАБОТЧИКИ КОМАНД (добавлена /clear) =====
 def process_message(message):
     chat_id = message["chat"]["id"]
     text = message.get("text", "").strip()
@@ -586,8 +584,16 @@ def process_message(message):
             "/post_in тема минуты — добавить пост через N минут\n"
             "/run_now тема — опубликовать прямо сейчас\n"
             "/list — показать все задания\n"
-            "/debug — показать содержимое schedule.json"
+            "/debug — показать содержимое schedule.json\n"
+            "/clear — удалить все задания"
         )
+        return
+
+    # ===== НОВАЯ КОМАНДА /clear =====
+    if text.startswith("/clear"):
+        save_schedule([])
+        send_message(chat_id, "✅ Все запланированные задания удалены. Расписание очищено.")
+        log("🧹 Расписание очищено командой /clear")
         return
 
     if text.startswith("/run_now"):
@@ -739,7 +745,7 @@ def add_test_post_if_empty():
 
 # ===== ГЛАВНЫЙ ЦИКЛ =====
 if __name__ == "__main__":
-    log("🤖 Бот для Строительного навигатора (приоритет GigaChat) запущен")
+    log("🤖 Бот для Строительного навигатора (с очисткой расписания) запущен")
     add_test_post_if_empty()
     threading.Thread(target=scheduler_loop, daemon=True).start()
     update_id = 0
